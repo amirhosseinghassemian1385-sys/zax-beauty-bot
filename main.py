@@ -1,27 +1,21 @@
 
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import cv2
 import numpy as np
-import mediapipe as mp
 import tempfile
-import torch
 from utils.u2net_hair import segment_hair
 
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
-
-def apply_lipstick(image, landmarks, color):
+def apply_lipstick(image, color):
+    # تخمین ناحیه لب با استفاده از ناحیه وسط پایین چهره (مبتنی بر چهره کامل نیست)
     h, w = image.shape[:2]
-    indices = [61,146,91,181,84,17,314,405,321,375,291,308,324,318,402,317,14,87,178,88,95,185,40,39,37,0,267,269,270,409,415]
-    points = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in indices]
+    center_x, center_y = w // 2, int(h * 0.65)
+    radius = int(min(w, h) * 0.1)
     mask = np.zeros_like(image)
-    cv2.fillPoly(mask, [np.array(points, dtype=np.int32)], color)
-    mask = cv2.GaussianBlur(mask, (7, 7), 10)
-    return cv2.addWeighted(image, 1, mask, 0.4, 0)
+    cv2.circle(mask, (center_x, center_y), radius, color, -1)
+    mask = cv2.GaussianBlur(mask, (21, 21), 15)
+    return cv2.addWeighted(image, 1, mask, 0.5, 0)
 
 def apply_hair_color(image, color):
     mask = segment_hair(image)
@@ -71,22 +65,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with tempfile.NamedTemporaryFile(suffix=".jpg") as tf:
         await file.download_to_drive(tf.name)
         img = cv2.imread(tf.name)
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
 
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
-            if service == 'lip':
-                out = apply_lipstick(img, landmarks, color)
-            elif service == 'hair':
-                out = apply_hair_color(img, color)
-            else:
-                out = img
-            out_path = tf.name.replace(".jpg", "_out.jpg")
-            cv2.imwrite(out_path, out)
-            await update.message.reply_photo(photo=open(out_path, 'rb'))
+        if service == 'lip':
+            out = apply_lipstick(img, color)
+        elif service == 'hair':
+            out = apply_hair_color(img, color)
         else:
-            await update.message.reply_text("چهره‌ای پیدا نشد، عکس واضح‌تری بفرست.")
+            out = img
+
+        out_path = tf.name.replace(".jpg", "_out.jpg")
+        cv2.imwrite(out_path, out)
+        await update.message.reply_photo(photo=open(out_path, 'rb'))
 
 TOKEN = "YOUR_BOT_TOKEN"
 app = ApplicationBuilder().token(TOKEN).build()
